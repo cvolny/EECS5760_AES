@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import collections
 import itertools
 import os
 import random
@@ -184,14 +185,12 @@ __rcon = [
 #</editor-fold>
 
 
-def encrypt(m, kv):
+def encrypt(m, kv, is_state=False):
     """encrypt message m (16-byte block) with 128-bit key k."""
-    blk = str_to_state(m)
-    print __state_as_hex(blk)
-    print __state_as_hex(kv[1])
+    blk = m if is_state else str_to_state(m)
+    transpose(blk)
     add_round_key(blk, kv[0])
     for i in range(1, 11):
-        print __state_as_hex(blk)
         sbox(blk)
         rshift(blk)
         if i < 10:
@@ -200,17 +199,18 @@ def encrypt(m, kv):
     return state_to_str(blk)
 
 
-def decrypt(m, kv):
+def decrypt(m, kv, leave_state=False):
     """Decrypt enciphered message m (16-byte block) with 128-bit key k."""
     blk = str_to_state(m)
-    add_round_key(blk, kv[-1])
+    add_round_key(blk, kv[10])
     for i in range(9, -1, -1):
-        isbox(blk)
         irshift(blk)
+        isbox(blk)
+        add_round_key(blk, kv[i])
         if i > 0:
             icmix(blk)
-        add_round_key(blk, kv[-i])
-    return state_to_str(blk)
+    transpose(blk)
+    return blk if leave_state else state_to_str(blk)
 
 
 def expand_key(k, c):
@@ -226,9 +226,9 @@ def str_to_state(v):
     assert len(v) == 16
     b = [[None] * 4 for x in range(4)]
     c = 0
-    for i in range(4):
-        for j in range(4):
-            b[j][i] = ord(v[c])
+    for row in range(4):
+        for col in range(4):
+            b[col][row] = ord(v[c])
             c += 1
     return b
 
@@ -238,81 +238,82 @@ def state_to_str(b):
     assert len(list(itertools.chain.from_iterable(b))) == 16
     v = [None for x in range(16)]
     c = 0
-    for i in range(4):
-        for j in range(4):
-            v[c] = chr(b[j][i])
+    for row in range(4):
+        for col in range(4):
+            v[c] = chr(b[col][row])
             c += 1
     return "".join(v)
 
 
 def __state_as_hex(b):
     """"Debugging routine for viewing state matrix in hex format."""
-    bp = [[None]*4 for x in range(4)]
-    for r in range(4):
-        for c in range(4):
-            bp[r][c] = hex(b[r][c])
-    return bp
+    bp = []
+    for row in range(4):
+        v = []
+        for col in range(4):
+            v.append("{:02x}".format(b[col][row]))
+        bp.append(" ".join(v))
+    return "[{:s}]".format("], [".join(bp))
+
+
+def __vector_as_hex(v):
+    """Debugging routine for viewing vector in hex format."""
+    return ["{:02x}".format(x) for x in v]
 
 
 def add_round_key(b, k):
     """XOR round key k to state matrix b."""
-    for c in range(4):
-        for r in range(4):
-            b[r][c] ^= k[r][c]
+    for col in range(4):
+        for row in range(4):
+            b[col][row] ^= k[col][row]
 
 
 def gen_next_key(k, n):
     """Generate next key kp given k and iteration n (lookup in __rcon[])."""
-    kp = [[None] * 4 for i in range(4)]
-    v = [__sbox[k[1][3]], __sbox[k[2][3]], __sbox[k[3][3]], __sbox[k[0][3]]]
-    print v
+    kp = nstate()
+    v = collections.deque(k[3][:])
+    v.rotate(-1)
+    v = [__sbox[val] for val in v]
     v[0] ^= __rcon[n]
-    v = [v[x] ^ k[x][0] for x in range(4)]
-    kp[0][0], kp[1][0], kp[2][0], kp[3][0] = v
-    for c in range(1, 4):
-        kp[0][c] = k[0][c] ^ v[0]
-        kp[1][c] = k[1][c] ^ v[1]
-        kp[2][c] = k[2][c] ^ v[2]
-        kp[3][c] = k[3][c] ^ v[3]
-        v = [kp[x][c] for x in range(4)]
+    for col in range(4):
+        kp[col] = [k[col][row] ^ v[row] for row in range(4)]
+        v = kp[col]
     return kp
 
 
 def sbox(b):
     """Performs sbox lookup for values in state matrix b. Modifies b in place."""
-    for i in range(4):
-        for j in range(4):
-            b[j][i] = __sbox[int(b[j][i])]
+    for col in range(4):
+        for row in range(4):
+            b[col][row] = __sbox[int(b[col][row])]
 
 
 def isbox(b):
     """Inversion of sbox(b). Modifies b in place."""
-    for i in range(4):
-        for j in range(4):
-            b[j][i] = __isbox[int(b[j][i])]
+    for col in range(4):
+        for row in range(4):
+            b[col][row] = __isbox[int(b[col][row])]
 
 
 def rshift(b):
     """Perform row shifts on b. Modifies b in place."""
-    b[1][0], b[1][1], b[1][2], b[1][3] = b[1][1], b[1][2], b[1][3], b[1][0]
-    b[2][0], b[2][1], b[2][2], b[2][3] = b[2][2], b[2][3], b[2][0], b[2][1]
-    b[3][0], b[3][1], b[3][2], b[3][3] = b[3][3], b[3][0], b[3][1], b[3][2]
+    b[0][1], b[1][1], b[2][1], b[3][1] = b[1][1], b[2][1], b[3][1], b[0][1]
+    b[0][2], b[1][2], b[2][2], b[3][2] = b[2][2], b[3][2], b[0][2], b[1][2]
+    b[0][3], b[1][3], b[2][3], b[3][3] = b[3][3], b[0][3], b[1][3], b[2][3]
 
 
 def irshift(b):
     """Inversion of rshift(b). Modifies b in place."""
-    b[1][1], b[1][2], b[1][3], b[1][0] = b[1][0], b[1][1], b[1][2], b[1][3]
-    b[2][2], b[2][3], b[2][0], b[2][1] = b[2][0], b[2][1], b[2][2], b[2][3]
-    b[3][3], b[3][0], b[3][1], b[3][2] = b[3][0], b[3][1], b[3][2], b[3][3]
+    b[1][1], b[2][1], b[3][1], b[0][1] = b[0][1], b[1][1], b[2][1], b[3][1]
+    b[2][2], b[3][2], b[0][2], b[1][2] = b[0][2], b[1][2], b[2][2], b[3][2]
+    b[3][3], b[0][3], b[1][3], b[2][3] = b[0][3], b[1][3], b[2][3], b[3][3]
 
 
 def cmix(b):
     """Perform column mix on b. Modifies b in place."""
-    for c in range(4):
-        v = [b[i][c] for i in range(4)]
+    for col in range(4):
+        v = b[col]
         __cmix_v(v)
-        for r in range(4):
-            b[r][c] = v[r]
 
 
 def __cmix_v(v):
@@ -326,11 +327,9 @@ def __cmix_v(v):
 
 def icmix(b):
     """Inversion of cmix(b). Modifies b in place."""
-    for c in range(4):
-        v = [b[i][c] for i in range(4)]
+    for col in range(4):
+        v = b[col]
         __icmix_v(v)
-        for r in range(4):
-            b[r][c] = v[r]
 
 
 def __icmix_v(v):
@@ -344,16 +343,28 @@ def __icmix_v(v):
 
 def digits(x, b, rev=False):
     """Returns list of digits in base-b from given number x."""
-    v = []                          # results
-    while x > 0:                    # loop so long as x is positive
-        x, d = divmod(x, b)           # d <- x mod b, x <- x int-div b
+    v = []
+    while x > 0:
+        x, d = divmod(x, b)
         v.append(d)
-    return v[::-1] if rev else v    # reverse if specified and return
+    return v[::-1] if rev else v
 
 
-def print_usage_exit(n=127):
-    print "Usage:"
-    print "AES -[e|d] 'PASSWORDPASSWORD' infile outfile"
+def horner(v, b, rev=False):
+    """Return integer in base-10 from list v of base-b number."""
+    x = 0
+    v = v[::-1] if rev else v[:]    # copy v, reverse if specified
+    while len(v) > 0:
+        d = v.pop()
+        x = x*b + d
+    return x
+
+
+def print_usage_exit(n=127, m=None):
+    if m:
+        print >> sys.stderr, m
+    print >> sys.stderr, "Usage:"
+    print >> sys.stderr, "AES -[e|d] 'PASSWORDPASSWORD' infile outfile"
     sys.exit(n)
 
 
@@ -362,20 +373,47 @@ def rdblk(filename, size=16, padded=True):
     with open(filename, "rb") as f:
         done = False
         while not done:
-            r = [chr(0)] * 16
+            b = [None] * 16
             cnt = 0
-            blk = f.read(size)
-            if blk:
-                for bt in blk:
-                    r[cnt] = bt
-                    cnt += 1
+            buf = f.read(size)
+            if not buf:
+                break
+            for bt in buf:
+                b[cnt] = bt
+                cnt += 1
             if cnt < size:
                 done = True
                 if padded:
                     while cnt < size:
-                        r[cnt] = chr(random.randint(0, 255))
+                        b[cnt] = chr(random.randint(0, 255))
                         cnt += 1
-            yield r
+            yield b
+
+
+def genfsize(filename):
+    """Generate blk0 containing filesize with random left-padding."""
+    size = os.stat(filename).st_size
+    if size >= 2 ** 32:
+        raise ValueError("File '%s' is too large." % filename)
+    b = rstate()
+    b[3] = [0, 0, 0, 0]
+    sv = digits(size, 256, rev=True)
+    for row in range(3, -1, -1):
+        if not sv:
+            break
+        b[3][row] = sv.pop()
+    return b
+
+
+def getfsize(b):
+    """Extract filesize from decrypted block b."""
+    sv = b[3]
+    return horner(sv, 256, rev=True)
+
+
+def rdfsize(b):
+    """Read the filesize from decrypted blk0 b."""
+    return horner(b[3], 256)
 
 
 def ntoken(v, n):
@@ -384,54 +422,83 @@ def ntoken(v, n):
         yield v[i:i + n]
 
 
-def main():
-    argc, argv = len(sys.argv), sys.argv
-    if argc < 5:
-        print_usage_exit(1)
-    mode = argv[1].upper()
-    ikey = argv[2]
-    inpf = argv[3]
-    outf = argv[4]
+def nstate():
+    """Generate a 4x4 empty state."""
+    return [[None] * 4 for x in range(4)]
 
-    key = [[None] * 4 for x in range(4)]
+
+def rstate():
+    """Generate a 4x4 random state."""
+    return [[random.randint(0, 255) for y in range(4)] for x in range(4)]
+
+
+def transpose(b):
+    """Return the transpose of 4x4 state b in place."""
+    for col in range(4):
+        for row in range(col + 1, 4):
+            b[row][col], b[col][row] = b[col][row], b[row][col]
+
+def parsehex(v):
+    """Parse 128bit hex string v into state variable."""
+    blk = nstate()
+    tokens = list(ntoken(v, 2))
+    i = 0
+    for col in range(4):
+        for row in range(4):
+            blk[col][row] = int(tokens[i], 16)
+            i += 1
+    return blk
+
+
+def main():
+    if len(sys.argv) != 5:
+        print_usage_exit(1, "Invalid number of arguments.")
+    mode = sys.argv[1].upper()
+    ikey = sys.argv[2]
+    inpf = sys.argv[3]
+    outf = sys.argv[4]
 
     if not mode in ("-E", "-D"):
-        print_usage_exit(2)
+        print_usage_exit(2, "Unrecognized mode '%s'." % mode)
     try:
         if 16 == len(ikey):
             key = str_to_state(ikey)
         elif 32 == len(ikey):
-            tokens = list(ntoken(ikey, 2))
-            i = 0
-            for r in range(4):
-                for c in range(4):
-                    key[r][c] = int(tokens[i], 16)
-                    i += 1
+            key = parsehex(ikey)
         else:
             raise ValueError("Invalid key.")
     except ValueError:
-        print_usage_exit(3)
+        print_usage_exit(3, "Invalid key '%s'." % ikey)
 
     if not os.path.isfile(inpf):
-        print_usage_exit(4)
+        print_usage_exit(4, "Input file '%s' does not exist." % inpf)
 
     kv = list(expand_key(key, 10))
-    for i in range(len(kv)):
-        print i
-        print __state_as_hex(kv[i])
 
     if "-E" == mode:
         try:
             with open(outf, "wb") as ofile:
-                for blk in rdblk(inpf, 16, False):  #DEBUGG
+                blk0 = genfsize(inpf)
+                ofile.write(encrypt(blk0, kv, is_state=True))
+                for blk in rdblk(inpf, 16, True):
                     ofile.write(encrypt(blk, kv))
         except IOError:
             print >> sys.stderr, "IO Error occurred."
     else:
         try:
             with open(outf, "wb") as ofile:
-                for blk in rdblk(inpf, 16, False):  #DEBUGG
-                    ofile.write(decrypt(blk, kv))
+                first = True
+                for blk in rdblk(inpf, 16, False):
+                    if first:
+                        blk0 = decrypt(blk, kv, leave_state=True)
+                        fs = getfsize(blk0)
+                        first = False
+                        continue
+                    m = decrypt(blk, kv)
+                    fs -= 16
+                    if fs < 0:
+                        m = m[:fs]
+                    ofile.write(m)
         except IOError:
             print >> sys.stderr, "IO Error occurred."
 
